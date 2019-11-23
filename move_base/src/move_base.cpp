@@ -277,12 +277,15 @@ namespace move_base {
     last_config_ = config;
   }
 
+  // 为 rviz 等提供一个简单的调用，该回调函数将 geometry_msgs::PoseStamped 形式的 goal 转换成
+  // move_base_msgs::MoveBaseActionGoal，再发布到对应类型的 goal 话题中
   void MoveBase::goalCB(const geometry_msgs::PoseStamped::ConstPtr& goal){
     ROS_DEBUG_NAMED("move_base","In ROS goal callback, wrapping the PoseStamped in the action message and re-sending to the server.");
     move_base_msgs::MoveBaseActionGoal action_goal;
     action_goal.header.stamp = ros::Time::now();
     action_goal.goal.target_pose = *goal;
 
+    // action_goal_pub_ 发布消息的 topic 为"move_base/goal"，消息类型为 move_base_msgs::MoveBaseActionGoal
     action_goal_pub_.publish(action_goal);
   }
 
@@ -352,7 +355,11 @@ namespace move_base {
   }
 
 
+  // 这是 movebase 提供的一个服务。
+  // 搜了一下发现，除了 movebase，navfn 以及 global_planner 这两个包也会发布这个服务，但是没有节点订阅～～～～。
+  // 这三个包的 cb 其实都是调用相应的全局规划器来获得一条 path 返回给客户端。
   bool MoveBase::planService(nav_msgs::GetPlan::Request &req, nav_msgs::GetPlan::Response &resp){
+    // move_base 必须处于非激活状态才能为外部用户制定规划
     if(as_->isActive()){
       ROS_ERROR("move_base must be in an inactive state to make a plan for an external user");
       return false;

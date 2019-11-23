@@ -124,9 +124,14 @@ namespace move_base {
 
       /**
        * @brief  A service call that can be made when the action is inactive that will return a plan
+       *         当 action 处于非激活状态时可以进行的服务调用，该服务调用将返回一个规划
+       *         这是 movebase 提供的一个服务，功能是调用相应的全局规划器来获得一条 path 返回给客户端
        * @param  req The goal request
+       *             请求的目标点
        * @param  resp The plan request
+       *              请求的规划
        * @return True if planning succeeded, false otherwise
+       *         如果规划成功，则为true，否则为false
        */
       bool planService(nav_msgs::GetPlan::Request &req, nav_msgs::GetPlan::Response &resp);
 
