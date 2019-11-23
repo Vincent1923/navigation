@@ -61,14 +61,17 @@
 
 namespace move_base {
   //typedefs to help us out with the action server so that we don't hace to type so much
+  // typedefs 来帮助我们使用 action server，这样我们就不必键入太多内容
   typedef actionlib::SimpleActionServer<move_base_msgs::MoveBaseAction> MoveBaseActionServer;
 
+  // MoveBase 状态
   enum MoveBaseState {
     PLANNING,
     CONTROLLING,
     CLEARING
   };
 
+  // Recovery 触发
   enum RecoveryTrigger
   {
     PLANNING_R,
@@ -79,26 +82,34 @@ namespace move_base {
   /**
    * @class MoveBase
    * @brief A class that uses the actionlib::ActionServer interface that moves the robot base to a goal location.
+   *        使用 actionlib::ActionServer 接口的类，该接口将机器人移动到目标位置。
    */
   class MoveBase {
     public:
       /**
        * @brief  Constructor for the actions
+       *         构造函数
        * @param name The name of the action
        * @param tf A reference to a TransformListener
+       *           对 TransformListener 的引用
        */
       MoveBase(tf::TransformListener& tf);
 
       /**
        * @brief  Destructor - Cleans up
+       *         析构函数 - 清理
        */
       virtual ~MoveBase();
 
       /**
        * @brief  Performs a control cycle
+       *         执行控制周期
        * @param goal A reference to the goal to pursue
+       *             目标点
        * @param global_plan A reference to the global plan being used
+       *                    对正在使用的全局规划的引用
        * @return True if processing of the goal is done, false otherwise
+       *         如果完成了目标，则为true，否则为false
        */
       bool executeCycle(geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& global_plan);
 
@@ -175,14 +186,15 @@ namespace move_base {
 
       tf::TransformListener& tf_;
 
-      MoveBaseActionServer* as_;
+      MoveBaseActionServer* as_;  // move_base 的 actionlib 服务器
 
-      boost::shared_ptr<nav_core::BaseLocalPlanner> tc_;
+      boost::shared_ptr<nav_core::BaseLocalPlanner> tc_;  // 局部路径规划器加载并创建实例后的指针
       costmap_2d::Costmap2DROS* planner_costmap_ros_, *controller_costmap_ros_;
 
-      boost::shared_ptr<nav_core::BaseGlobalPlanner> planner_;
+      boost::shared_ptr<nav_core::BaseGlobalPlanner> planner_;  // 全局路径规划器加载并创建实例后的指针
       std::string robot_base_frame_, global_frame_;
 
+      // 这个是转圈圈的？恢复状态
       std::vector<boost::shared_ptr<nav_core::RecoveryBehavior> > recovery_behaviors_;
       unsigned int recovery_index_;
 
@@ -203,19 +215,25 @@ namespace move_base {
 
       ros::Time last_valid_plan_, last_valid_control_, last_oscillation_reset_;
       geometry_msgs::PoseStamped oscillation_pose_;
+      // 以插件形式实现全局规划器、局部规划器和丢失时恢复规划器。
+      // 插件形式可以实现随时动态地加载C++类库，但需要在包中注册该插件，不用这个的话需要提前链接（相当于运行时加载）
       pluginlib::ClassLoader<nav_core::BaseGlobalPlanner> bgp_loader_;
       pluginlib::ClassLoader<nav_core::BaseLocalPlanner> blp_loader_;
       pluginlib::ClassLoader<nav_core::RecoveryBehavior> recovery_loader_;
 
       //set up plan triple buffer
+      // 一般保存规划器中新鲜出路的路径，然后将其给 latest_plan_
       std::vector<geometry_msgs::PoseStamped>* planner_plan_;
+      // 作为一个桥梁，在 MoveBase::executeCycle 中传递给 controller_plan_
       std::vector<geometry_msgs::PoseStamped>* latest_plan_;
       std::vector<geometry_msgs::PoseStamped>* controller_plan_;
 
       //set up the planner's thread
       bool runPlanner_;
       boost::recursive_mutex planner_mutex_;
+      // boost 的一种结合了互斥锁的用法，可以使一个线程进入睡眠状态，然后在另一个线程触发唤醒。
       boost::condition_variable_any planner_cond_;
+      // 通过这个值将 goal 在 MoveBase::executeCb 与 MoveBase::planThread() 之间传递
       geometry_msgs::PoseStamped planner_goal_;
       boost::thread* planner_thread_;
 
