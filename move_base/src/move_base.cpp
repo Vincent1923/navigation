@@ -55,6 +55,7 @@ namespace move_base {
     planner_plan_(NULL), latest_plan_(NULL), controller_plan_(NULL),
     runPlanner_(false), setup_(false), p_freq_change_(false), c_freq_change_(false), new_global_plan_(false) {
 
+    // 定义一个名为 move_base 的 SimpleActionServer，该服务器的 Callback 为 MoveBase::executeCb
     as_ = new MoveBaseActionServer(ros::NodeHandle(), "move_base", boost::bind(&MoveBase::executeCb, this, _1), false);
 
     ros::NodeHandle private_nh("~");
@@ -63,6 +64,7 @@ namespace move_base {
     recovery_trigger_ = PLANNING_R;
 
     //get some parameters that will be global to the move base node
+    // 从参数服务器获取一些参数，包括两个规划器名称、代价地图坐标系、规划频率、控制周期等
     std::string global_planner, local_planner;
     private_nh.param("base_global_planner", global_planner, std::string("navfn/NavfnROS"));
     private_nh.param("base_local_planner", local_planner, std::string("base_local_planner/TrajectoryPlannerROS"));
@@ -83,9 +85,11 @@ namespace move_base {
     controller_plan_ = new std::vector<geometry_msgs::PoseStamped>();
 
     //set up the planner's thread
+    // 新建 planner 线程，入口为 MoveBase::planThread
     planner_thread_ = new boost::thread(boost::bind(&MoveBase::planThread, this));
 
     //for comanding the base
+    // 控制机器人运动
     vel_pub_ = nh.advertise<geometry_msgs::Twist>("cmd_vel", 1);
     current_goal_pub_ = private_nh.advertise<geometry_msgs::PoseStamped>("current_goal", 0 );
 
@@ -95,10 +99,14 @@ namespace move_base {
     //we'll provide a mechanism for some people to send goals as PoseStamped messages over a topic
     //they won't get any useful information back about its status, but this is useful for tools
     //like nav_view and rviz
+    // 订阅 geometry_msgs::PoseStamped 类型的 goal 话题，cb为 MoveBase::goalCB，
+    // 你在 rviz 中输入的目标点就是通过这个函数来响应的
     ros::NodeHandle simple_nh("move_base_simple");
     goal_sub_ = simple_nh.subscribe<geometry_msgs::PoseStamped>("goal", 1, boost::bind(&MoveBase::goalCB, this, _1));
 
     //we'll assume the radius of the robot to be consistent with what's specified for the costmaps
+    // 我们假设机器人的半径与为 costmaps 指定的半径一致
+    // 从参数服务器获取代价地图相关的一些参数
     private_nh.param("local_costmap/inscribed_radius", inscribed_radius_, 0.325);
     private_nh.param("local_costmap/circumscribed_radius", circumscribed_radius_, 0.46);
     private_nh.param("clearing_radius", clearing_radius_, circumscribed_radius_);
@@ -113,6 +121,7 @@ namespace move_base {
     planner_costmap_ros_->pause();
 
     //initialize the global planner
+    // 初始化 global planner，包括查看规划器是否有效，通过代价地图创建实例等
     try {
       planner_ = bgp_loader_.createInstance(global_planner);
       planner_->initialize(bgp_loader_.getName(global_planner), planner_costmap_ros_);
@@ -126,6 +135,7 @@ namespace move_base {
     controller_costmap_ros_->pause();
 
     //create a local planner
+    // 初始化 local planner，包括查看规划器是否有效，通过代价地图创建实例等
     try {
       tc_ = blp_loader_.createInstance(local_planner);
       ROS_INFO("Created local_planner %s", local_planner.c_str());
@@ -136,13 +146,16 @@ namespace move_base {
     }
 
     // Start actively updating costmaps based on sensor data
+    // 开启根据传感器数据更新代价地图
     planner_costmap_ros_->start();
     controller_costmap_ros_->start();
 
     //advertise a service for getting a plan
+    // 定义一个名为 make_plan 的服务，cb为 MoveBase::planService
     make_plan_srv_ = private_nh.advertiseService("make_plan", &MoveBase::planService, this);
 
     //advertise a service for clearing the costmaps
+    // 定义一个名为 clear_costmaps 的服务，cb为 MoveBase::clearCostmapsService
     clear_costmaps_srv_ = private_nh.advertiseService("clear_costmaps", &MoveBase::clearCostmapsService, this);
 
     //if we shutdown our costmaps when we're deactivated... we'll do that now
@@ -153,6 +166,7 @@ namespace move_base {
     }
 
     //load any user specified recovery behaviors, and if that fails load the defaults
+    // 先 loadRecoveryBehaviors，不行再 loadDefaultRecoveryBehaviors 加载用户自定义的恢复规划器，这里包括了找不到路自转360°
     if(!loadRecoveryBehaviors(private_nh)){
       loadDefaultRecoveryBehaviors();
     }
@@ -164,8 +178,10 @@ namespace move_base {
     recovery_index_ = 0;
 
     //we're all set up now so we can start the action server
+    // 启动actionlib服务器
     as_->start();
 
+    // 启动动态参数服务器，回调函数为 reconfigureCB
     dsrv_ = new dynamic_reconfigure::Server<move_base::MoveBaseConfig>(ros::NodeHandle("~"));
     dynamic_reconfigure::Server<move_base::MoveBaseConfig>::CallbackType cb = boost::bind(&MoveBase::reconfigureCB, this, _1, _2);
     dsrv_->setCallback(cb);
