@@ -518,8 +518,11 @@ namespace move_base {
     vel_pub_.publish(cmd_vel);
   }
 
+  // 检查四元数是否有效，即四元数的z轴必须接近垂直方向。
   bool MoveBase::isQuaternionValid(const geometry_msgs::Quaternion& q){
     //first we need to check if the quaternion has nan's or infs
+    // 首先，我们需要检查四元数是否具有 nan's（非数字）或 infs（有限值）
+    // std::isfinite(x) 函数返回x是否为有限值。有限值是既不是无限也不是 NaN(Not-A-Number)（非数字）的任何浮点值。
     if(!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w)){
       ROS_ERROR("Quaternion has nans or infs... discarding as a navigation goal");
       return false;
@@ -528,19 +531,29 @@ namespace move_base {
     tf::Quaternion tf_q(q.x, q.y, q.z, q.w);
 
     //next, we need to check if the length of the quaternion is close to zero
+    // 接下来，我们需要检查四元数的长度是否接近零
+    // tf_q.length2() 函数返回四元数 tf_q 的长度平方
     if(tf_q.length2() < 1e-6){
+      // 四元数的长度接近零...放弃作为导航目标
       ROS_ERROR("Quaternion has length close to zero... discarding as navigation goal");
       return false;
     }
 
     //next, we'll normalize the quaternion and check that it transforms the vertical vector correctly
-    tf_q.normalize();
+    // 接下来，我们将对四元数进行归一化并检查其是否正确转换了垂直向量
+    tf_q.normalize();  // 返回与向量 tf_q 同方向的单位向量
 
     tf::Vector3 up(0, 0, 1);
 
+    // tf_q.getAxis() 函数返回此四元数表示的旋转轴（旋转向量）。正常情况下应为z轴，即 tf_q.getAxis() 为 (0, 0, 1)。
+    // tf_q.getAngle() 函数返回此四元数表示的旋转角度[0, 2Pi]。
+    // up.rotate(tf_q.getAxis(), tf_q.getAngle()) 函数表示向量 up 绕向量 tf_q.getAxis() 旋转角度 tf_q.getAngle()。
+    // 正常情况下应为 up 绕 z轴单位向量(0, 0, 1)旋转，所以结果为 up。
+    // up.dot() 函数返回两个向量的点积。正常情况下结果为1。
     double dot = up.dot(up.rotate(tf_q.getAxis(), tf_q.getAngle()));
 
     if(fabs(dot - 1) > 1e-3){
+      // 四元数无效...要进行导航，四元数的z轴必须接近垂直方向。
       ROS_ERROR("Quaternion is invalid... for navigation the z-axis of the quaternion must be close to vertical.");
       return false;
     }
@@ -548,16 +561,22 @@ namespace move_base {
     return true;
   }
 
+  // 把目标点 goal_pose_msg 的坐标变换到 global planner 的坐标系下，global planner 所在的坐标系一般为"map"
   geometry_msgs::PoseStamped MoveBase::goalToGlobalFrame(const geometry_msgs::PoseStamped& goal_pose_msg){
+    // 获取代价地图 planner_costmap_ros_ 的全局坐标系名称，一般为"map"
     std::string global_frame = planner_costmap_ros_->getGlobalFrameID();
     tf::Stamped<tf::Pose> goal_pose, global_pose;
+    // poseStampedMsgToTF() 函数将 PoseStamped msg 转换为 Stamped<Pose>
     poseStampedMsgToTF(goal_pose_msg, goal_pose);
 
     //just get the latest available transform... for accuracy they should send
     //goals in the frame of the planner
+    // 只需获取最新的可用转换...为了准确起见，他们应该在规划器的坐标系内发送目标
     goal_pose.stamp_ = ros::Time();
 
     try{
+      // 把 goal_pose 从自身坐标系 goal_pose.frame_id_ 变换到 global_frame 坐标系下，
+      // 即获取 goal_pose 相对于 global_frame 坐标系下的坐标，并赋值给 global_pose。
       tf_.transformPose(global_frame, goal_pose, global_pose);
     }
     catch(tf::TransformException& ex){
@@ -567,6 +586,7 @@ namespace move_base {
     }
 
     geometry_msgs::PoseStamped global_pose_msg;
+    // tf::poseStampedTFToMsg() 函数将 Stamped<Pose> 转换为 PoseStamped msg
     tf::poseStampedTFToMsg(global_pose, global_pose_msg);
     return global_pose_msg;
   }
@@ -659,33 +679,42 @@ namespace move_base {
     }
   }
 
+  // movebase 的 actionlib 服务的回调函数
+  // 第一次接收到 goal 时会进入该函数，但如果没有完成任务，尚未退出时，再有接收到 goal 并不会再新建线程进入一次
+  // （应该也可以这样操作，这里并没有这样选择），而是通过抢断信号的形式通知该函数，
+  // 所以在处理 goal 的时候需要经常查看 isPreemptRequested 函数的返回，看是否有抢占。
   void MoveBase::executeCb(const move_base_msgs::MoveBaseGoalConstPtr& move_base_goal)
   {
+    // 检查四元数是否有效，即四元数的z轴必须接近垂直方向。
     if(!isQuaternionValid(move_base_goal->target_pose.pose.orientation)){
       as_->setAborted(move_base_msgs::MoveBaseResult(), "Aborting on goal because it was sent with an invalid quaternion");
       return;
     }
 
+    // 把目标点 move_base_goal->target_pose 的坐标变换到 global planner 的坐标系下，global planner 所在的坐标系一般为"map"
     geometry_msgs::PoseStamped goal = goalToGlobalFrame(move_base_goal->target_pose);
 
     //we have a goal so start the planner
+    // 我们有一个目标点，所以开启规划器
+    // 开启规划线程得到路径
     boost::unique_lock<boost::recursive_mutex> lock(planner_mutex_);
     planner_goal_ = goal;
     runPlanner_ = true;
-    planner_cond_.notify_one();
+    planner_cond_.notify_one();  // 启用一个线程
     lock.unlock();
 
-    current_goal_pub_.publish(goal);
+    current_goal_pub_.publish(goal);  // 在 topic "move_base/current_goal" 上发布目标点 goal
     std::vector<geometry_msgs::PoseStamped> global_plan;
 
-    ros::Rate r(controller_frequency_);
-    if(shutdown_costmaps_){
+    ros::Rate r(controller_frequency_);  // controller_frequency_ 默认为20.0
+    if(shutdown_costmaps_){  // shutdown_costmaps_ 默认为 false
       ROS_DEBUG_NAMED("move_base","Starting up costmaps that were shut down previously");
-      planner_costmap_ros_->start();
-      controller_costmap_ros_->start();
+      planner_costmap_ros_->start();     // 开启 global costmap
+      controller_costmap_ros_->start();  // 开启 local costmap
     }
 
     //we want to make sure that we reset the last time we had a valid plan and control
+    // 我们想确保我们重设了上一次拥有有效的规划和控制时的时间
     last_valid_control_ = ros::Time::now();
     last_valid_plan_ = ros::Time::now();
     last_oscillation_reset_ = ros::Time::now();
