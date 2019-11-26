@@ -685,25 +685,28 @@ namespace move_base {
   // 所以在处理 goal 的时候需要经常查看 isPreemptRequested 函数的返回，看是否有抢占。
   void MoveBase::executeCb(const move_base_msgs::MoveBaseGoalConstPtr& move_base_goal)
   {
-    // 检查四元数是否有效，即四元数的z轴必须接近垂直方向。
+    // 判断 goal 有效性，检查四元数是否有效，即四元数的z轴必须接近垂直方向。
     if(!isQuaternionValid(move_base_goal->target_pose.pose.orientation)){
       as_->setAborted(move_base_msgs::MoveBaseResult(), "Aborting on goal because it was sent with an invalid quaternion");
       return;
     }
 
+    // 统一转换到全局坐标系
     // 把目标点 move_base_goal->target_pose 的坐标变换到 global planner 的坐标系下，global planner 所在的坐标系一般为"map"
     geometry_msgs::PoseStamped goal = goalToGlobalFrame(move_base_goal->target_pose);
 
     //we have a goal so start the planner
     // 我们有一个目标点，所以开启规划器
-    // 开启规划线程得到路径
+    // 启动新线程来获取规划路径，唤醒 planThread 线程开始规划
     boost::unique_lock<boost::recursive_mutex> lock(planner_mutex_);
     planner_goal_ = goal;
     runPlanner_ = true;
+    // 唤醒等待条件变量的一个线程：即调用 planner_cond_.wait() 的 MoveBase::planThread()
     planner_cond_.notify_one();  // 启用一个线程
     lock.unlock();
 
-    current_goal_pub_.publish(goal);  // 在 topic "move_base/current_goal" 上发布目标点 goal
+    // 在 topic "move_base/current_goal" 上发布目标点 goal，这个话题貌似只有一些rviz上用来显示的
+    current_goal_pub_.publish(goal);
     std::vector<geometry_msgs::PoseStamped> global_plan;
 
     ros::Rate r(controller_frequency_);  // controller_frequency_ 默认为20.0
@@ -723,6 +726,7 @@ namespace move_base {
     ros::NodeHandle n;
     while(n.ok())
     {
+      // //更改控制周期，设置控制器频率为 controller_frequency_
       if(c_freq_change_)
       {
         ROS_INFO("Setting controller frequency to %.2f", controller_frequency_);
@@ -730,72 +734,97 @@ namespace move_base {
         c_freq_change_ = false;
       }
 
-      if(as_->isPreemptRequested()){
-        if(as_->isNewGoalAvailable()){
+      // 期间会不断检测是否有新的 goal 抢占，或者坐标系变换等，如果有则在 while 循环中重复初始化再跟随
+      // 是否有抢占请求，SimpleActionServer 的政策是，新的 goal 都会抢占旧的 goal，这里应该只是为了清除新 goal 的一些状态。
+      // （那些待定的 goal 也有可能抢占，或者可以直接 cancel 抢占 Current？）
+      if(as_->isPreemptRequested()){  // 被抢占了(可能是发出新的 goal，也可能是取消了)
+        if(as_->isNewGoalAvailable()){  // 发布新的 goal，如果是新的 goal 这个函数会将其他 goal 设置为被抢占状态
           //if we're active and a new goal is available, we'll accept it, but we won't shut anything down
-          move_base_msgs::MoveBaseGoal new_goal = *as_->acceptNewGoal();
+          // 如果我们是激活状态并且有新的可用目标点，我们会接受目标点，但是我们不会关闭任何东西
+          move_base_msgs::MoveBaseGoal new_goal = *as_->acceptNewGoal();  // 接收新的目标点
 
+          // 判断 goal 有效性，检查四元数是否有效，即四元数的z轴必须接近垂直方向。
           if(!isQuaternionValid(new_goal.target_pose.pose.orientation)){
             as_->setAborted(move_base_msgs::MoveBaseResult(), "Aborting on goal because it was sent with an invalid quaternion");
-            return;
+            return;  // 无效退出
           }
 
+          // 统一转换到全局坐标系
+          // 把目标点 move_base_goal->target_pose 的坐标变换到 global planner 的坐标系下，global planner 所在的坐标系一般为"map"
           goal = goalToGlobalFrame(new_goal.target_pose);
 
           //we'll make sure that we reset our state for the next execution cycle
+          // 我们将确保在下一个执行周期重置状态
           recovery_index_ = 0;
           state_ = PLANNING;
 
           //we have a new goal so make sure the planner is awake
+          // 我们有一个新的目标点，所以确保规划器是开启的
+          // 启动新线程来获取规划路径，唤醒 planThread 线程开始规划
           lock.lock();
           planner_goal_ = goal;
           runPlanner_ = true;
-          planner_cond_.notify_one();
+          // 唤醒等待条件变量的一个线程：即调用 planner_cond_.wait() 的 MoveBase::planThread()
+          planner_cond_.notify_one();  // 启用一个线程
           lock.unlock();
 
           //publish the goal point to the visualizer
+          // 将目标点发布到 visualizer
+          // 在 topic "move_base/current_goal" 上发布目标点 goal，这个话题貌似只有一些rviz上用来显示的
           ROS_DEBUG_NAMED("move_base","move_base has received a goal of x: %.2f, y: %.2f", goal.pose.position.x, goal.pose.position.y);
           current_goal_pub_.publish(goal);
 
           //make sure to reset our timeouts and counters
+          // 确保重置我们的超时和计数器
           last_valid_control_ = ros::Time::now();
           last_valid_plan_ = ros::Time::now();
           last_oscillation_reset_ = ros::Time::now();
           planning_retries_ = 0;
         }
-        else {
+        else {  // 如果是 cancel 了
           //if we've been preempted explicitly we need to shut things down
-          resetState();
+          // 如果我们被明确抢占（preempted）了，我们需要关闭一切
+          resetState();  // 停止规划线程、停车等
 
           //notify the ActionServer that we've successfully preempted
+          // 通知 ActionServer 我们已成功抢占
           ROS_DEBUG_NAMED("move_base","Move base preempting the current goal");
-          as_->setPreempted();
+          as_->setPreempted();  // 设置 current goal 被抢占
 
           //we'll actually return from execute after preempting
+          // 实际上，抢占之后我们将从执行返回
           return;
         }
       }
 
       //we also want to check if we've changed global frames because we need to transform our goal pose
+      // 我们还想检查是否改变了全局坐标系，因为我们需要改变目标点位姿
       if(goal.header.frame_id != planner_costmap_ros_->getGlobalFrameID()){
-        goal = goalToGlobalFrame(goal);
+        goal = goalToGlobalFrame(goal);  // 判断这段时间是否改了坐标系
 
         //we want to go back to the planning state for the next execution cycle
+        // 我们想回到下一个执行周期的规划状态
         recovery_index_ = 0;
         state_ = PLANNING;
 
         //we have a new goal so make sure the planner is awake
+        // 我们有一个新的目标点，所以确保规划器是开启的
+        // 启动新线程来获取规划路径，唤醒 planThread 线程开始规划
         lock.lock();
         planner_goal_ = goal;
         runPlanner_ = true;
-        planner_cond_.notify_one();
+        // 唤醒等待条件变量的一个线程：即调用 planner_cond_.wait() 的 MoveBase::planThread()
+        planner_cond_.notify_one();  // 启用一个线程
         lock.unlock();
 
         //publish the goal point to the visualizer
+        // 将目标点发布到 visualizer
+        // 在 topic "move_base/current_goal" 上发布目标点 goal，这个话题貌似只有一些rviz上用来显示的
         ROS_DEBUG_NAMED("move_base","The global frame for move_base has changed, new frame: %s, new goal position x: %.2f, y: %.2f", goal.header.frame_id.c_str(), goal.pose.position.x, goal.pose.position.y);
         current_goal_pub_.publish(goal);
 
         //make sure to reset our timeouts and counters
+        // 确保重置我们的超时和计数器
         last_valid_control_ = ros::Time::now();
         last_valid_plan_ = ros::Time::now();
         last_oscillation_reset_ = ros::Time::now();
@@ -803,33 +832,45 @@ namespace move_base {
       }
 
       //for timing that gives real time even in simulation
+      // 即使在仿真中也能提供实时的时序
       ros::WallTime start = ros::WallTime::now();
 
       //the real work on pursuing a goal is done here
+      // 跟随目标点的真正工作在这里完成
+      // 这是控制机器人跟踪的主要函数，即主要工作在 executeCycle() 函数中
       bool done = executeCycle(goal, global_plan);
 
       //if we're done, then we'll return from execute
+      // 如果我们完成了，那么我们将从执行返回
+      // 完成目标终止回调
       if(done)
         return;
 
       //check if execution of the goal has completed in some way
+      // 检查目标的执行是否以某种方式完成
 
       ros::WallDuration t_diff = ros::WallTime::now() - start;
       ROS_DEBUG_NAMED("move_base","Full control cycle time: %.9f\n", t_diff.toSec());
 
       r.sleep();
       //make sure to sleep for the remainder of our cycle time
+      // 确保在我们剩余的周期时间里休眠
+      // 这个是一般的警告信息，规划的时间超时
       if(r.cycleTime() > ros::Duration(1 / controller_frequency_) && state_ == CONTROLLING)
         ROS_WARN("Control loop missed its desired rate of %.4fHz... the loop actually took %.4f seconds", controller_frequency_, r.cycleTime().toSec());
     }
 
+    // ros不ok时清除退出
+
     //wake up the planner thread so that it can exit cleanly
+    // 唤醒规划线程，使其可以干净地退出
     lock.lock();
     runPlanner_ = true;
     planner_cond_.notify_one();
     lock.unlock();
 
     //if the node is killed then we'll abort and return
+    // 如果 node 被关闭了，那么我们将中止并返回
     as_->setAborted(move_base_msgs::MoveBaseResult(), "Aborting on the goal because the node has been killed");
     return;
   }
