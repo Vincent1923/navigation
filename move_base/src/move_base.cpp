@@ -479,10 +479,13 @@ namespace move_base {
     tc_.reset();
   }
 
+  // MoveBase::makePlan() 函数的作用是获取机器人的位姿作为起点，然后调用全局规划器的 makePlan 返回规划路径，存储在 plan
+  // 这个是在 global costmap 下做的 global planner
   bool MoveBase::makePlan(const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& plan){
     boost::unique_lock<costmap_2d::Costmap2D::mutex_t> lock(*(planner_costmap_ros_->getCostmap()->getMutex()));
 
     //make sure to set the plan to be empty initially
+    // 确保最初将规划路径设置为空
     plan.clear();
 
     //since this gets called on handle activate
@@ -492,6 +495,7 @@ namespace move_base {
     }
 
     //get the starting pose of the robot
+    // 获取机器人的起始位姿
     tf::Stamped<tf::Pose> global_pose;
     if(!planner_costmap_ros_->getRobotPose(global_pose)) {
       ROS_WARN("Unable to get starting pose of robot, unable to create global plan");
@@ -499,9 +503,11 @@ namespace move_base {
     }
 
     geometry_msgs::PoseStamped start;
+    // tf::poseStampedTFToMsg() 函数将 Stamped<Pose> 转换为 PoseStamped msg
     tf::poseStampedTFToMsg(global_pose, start);
 
     //if the planner fails or returns a zero length plan, planning failed
+    // 如果全局规划器失败或返回零长度的规划路径，则全局路径规划失败
     if(!planner_->makePlan(start, goal, plan) || plan.empty()){
       ROS_DEBUG_NAMED("move_base","Failed to find a  plan to point (%.2f, %.2f)", goal.pose.position.x, goal.pose.position.y);
       return false;
@@ -510,6 +516,7 @@ namespace move_base {
     return true;
   }
 
+  // 向 cmd_vel 话题发布000的速度信息，机器人停止运动
   void MoveBase::publishZeroVelocity(){
     geometry_msgs::Twist cmd_vel;
     cmd_vel.linear.x = 0.0;
@@ -591,12 +598,17 @@ namespace move_base {
     return global_pose_msg;
   }
 
+  // wakePlanner() 为定时器函数，主要工作是唤醒全局路径规划线程 planner_thread_。
+  // 如果还没到规划周期则定时器休眠，在定时器函数中通过 planner_cond_ 唤醒线程。
   void MoveBase::wakePlanner(const ros::TimerEvent& event)
   {
     // we have slept long enough for rate
-    planner_cond_.notify_one();
+    // 我们已经休眠了足够长的时间
+    planner_cond_.notify_one();  // 唤醒全局路径规划线程 planner_thread_
   }
 
+  // 这是全局路径规划线程 planner_thread_ 的入口。这个函数需要等待 actionlib 服务器的 CallBack 函数 MoveBase::executeCb 来唤醒启动。
+  // 主要作用是调用全局路径规划获取路径，同时保证规划的周期性以及规划超时清除 goal。
   void MoveBase::planThread(){
     ROS_DEBUG_NAMED("move_base_plan_thread","Starting planner thread...");
     ros::NodeHandle n;
@@ -605,38 +617,50 @@ namespace move_base {
     boost::unique_lock<boost::recursive_mutex> lock(planner_mutex_);
     while(n.ok()){
       //check if we should run the planner (the mutex is locked)
+      // 检查我们是否应该运行规划器（互斥锁已锁定）
+      // 等待唤醒同步，等待 executeCb 函数使得 runPlanner_ = true
       while(wait_for_wake || !runPlanner_){
         //if we should not be running the planner then suspend this thread
+        // 如果我们不应该运行规划器，则暂停该线程
         ROS_DEBUG_NAMED("move_base_plan_thread","Planner thread is suspending");
-        planner_cond_.wait(lock);
+        planner_cond_.wait(lock);  // 使线程进入睡眠，等待 MoveBase::executeCb，以及规划周期的唤醒
         wait_for_wake = false;
       }
       ros::Time start_time = ros::Time::now();
 
       //time to plan! get a copy of the goal and unlock the mutex
+      // 规划路径开始！获得目标点的复制并解锁互斥锁
+      // planner_goal_ 是在 MoveBase::executeCb 中得到的目标位姿，需要上锁保证线程安全
       geometry_msgs::PoseStamped temp_goal = planner_goal_;
       lock.unlock();
       ROS_DEBUG_NAMED("move_base_plan_thread","Planning...");
 
       //run planner
-      planner_plan_->clear();
-      bool gotPlan = n.ok() && makePlan(temp_goal, *planner_plan_);
+      // 运行全局路径规划器
+      planner_plan_->clear();  // 清除原来规划出的路径向量
+      // MoveBase::makePlan 作用是获取机器人的位姿作为起点，然后调用全局规划器的 makePlan 返回规划路径，存储在 planner_plan_
+      bool gotPlan = n.ok() && makePlan(temp_goal, *planner_plan_);  // 全局规划函数
 
+      // 如果规划出路径则更新相应路径，并将 state_ 转换为 CONTROLLING 状态
       if(gotPlan){
+        // 成功规划路径
         ROS_DEBUG_NAMED("move_base_plan_thread","Got Plan with %zu points!", planner_plan_->size());
         //pointer swap the plans under mutex (the controller will pull from latest_plan_)
+        // 在互斥锁下指针指向的路径规划进行交换（控制器将从 latest_plan_ 中拉出）
         std::vector<geometry_msgs::PoseStamped>* temp_plan = planner_plan_;
 
         lock.lock();
         planner_plan_ = latest_plan_;
+        // 将最新的全局路径放到 latest_plan_ 中，其在 MoveBase::executeCycle 中被传递到 controller_plan_ 中，利用锁来进行同步
         latest_plan_ = temp_plan;
         last_valid_plan_ = ros::Time::now();
         planning_retries_ = 0;
-        new_global_plan_ = true;
+        new_global_plan_ = true;  // 新的全局规划路径
 
         ROS_DEBUG_NAMED("move_base_plan_thread","Generated a plan from the base_global_planner");
 
         //make sure we only start the controller if we still haven't reached the goal
+        // 确保仅在仍未到达目标点时才启动控制器
         if(runPlanner_)
           state_ = CONTROLLING;
         if(planner_frequency_ <= 0)
@@ -644,21 +668,32 @@ namespace move_base {
         lock.unlock();
       }
       //if we didn't get a plan and we are in the planning state (the robot isn't moving)
+      // 如果我们没有成功规划出路径，并且我们处于 PLANNING 状态（机器人没有移动）
+      // 如果没有规划出路径，并且处于 PLANNING 状态，则判断是否超过最大规划周期或者规划次数。
+      // 如果是则进入自转模式，否则应该会等待 MoveBase::executeCycle 的唤醒再次规划。
+      // 仅在 MoveBase::executeCb 及其调用的 MoveBase::executeCycle，
+      // 或者重置状态时会被设置为 PLANNING，一般是刚获得新目标，或者得到路径但计算不出下一步控制时重新进行路径规划。
       else if(state_==PLANNING){
         ROS_DEBUG_NAMED("move_base_plan_thread","No Plan...");
+        // 计算尝试规划的最大时间（上一次成功规划的时间加上 planner_patience_）
         ros::Time attempt_end = last_valid_plan_ + ros::Duration(planner_patience_);
 
         //check if we've tried to make a plan for over our time limit or our maximum number of retries
         //issue #496: we stop planning when one of the conditions is true, but if max_planning_retries_
         //is negative (the default), it is just ignored and we have the same behavior as ever
+        // 检查我们是否试图在我们的时限或最大重试次数上规划路径。
+        // 问题＃496：当其中一个条件为真时，我们将停止规划路径。
+        // 但是如果 max_planning_retries_ 为负（默认值），则将其忽略，并且行为与以往相同。
         lock.lock();
         planning_retries_++;
+        // 若规划时间超时或次数超限，则进入 CLEARING 状态，recovery 恢复模式
         if(runPlanner_ &&
            (ros::Time::now() > attempt_end || planning_retries_ > uint32_t(max_planning_retries_))){
           //we'll move into our obstacle clearing mode
+          // 我们将进入障碍物清除模式
           state_ = CLEARING;
           runPlanner_ = false;  // proper solution for issue #523
-          publishZeroVelocity();
+          publishZeroVelocity();  // 直接向 cmd_vel 话题发布000的速度信息，机器人停止运动
           recovery_trigger_ = PLANNING_R;
         }
 
@@ -666,13 +701,20 @@ namespace move_base {
       }
 
       //take the mutex for the next iteration
+      // 将互斥量用于下一次迭代
       lock.lock();
 
       //setup sleep interface if needed
+      // 如果需要，设置休眠接口
+      // 如果还没到规划周期则定时器休眠，在定时器中断中通过 planner_cond_ 唤醒，这里规划周期为0
       if(planner_frequency_ > 0){
+        // 计算休眠时间
         ros::Duration sleep_time = (start_time + ros::Duration(1.0/planner_frequency_)) - ros::Time::now();
         if (sleep_time > ros::Duration(0.0)){
           wait_for_wake = true;
+          // 定时器，多久没有规划路径，就通知一次规划路径。
+          // 小于要求的规划时间，则 sleep 多余的时间来唤醒该进程，wait_for_wake 为 True 后下一个循环线程将进入等待状态，
+          // 定时器函数 wakePlanner 将唤醒本线程，若 planner_frequency = 0 则只在有新目标时候才唤醒本线程。
           timer = n.createTimer(sleep_time, &MoveBase::wakePlanner, this);
         }
       }
