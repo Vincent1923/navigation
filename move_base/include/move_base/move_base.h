@@ -137,9 +137,14 @@ namespace move_base {
 
       /**
        * @brief  Make a new global plan
+       *         制定一个新的全局路径规划
+       *         makePlan 作用是获取机器人的位姿作为起点，然后调用全局规划器的 makePlan 返回规划路径，存储在 plan
        * @param  goal The goal to plan to
+       *              需要规划到达的目标点
        * @param  plan Will be filled in with the plan made by the planner
+       *              全局规划器规划的全局路径，存储在 plan
        * @return  True if planning succeeds, false otherwise
+       *          如果规划成功，则为true，否则为false
        */
       bool makePlan(const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& plan);
 
@@ -164,6 +169,8 @@ namespace move_base {
 
       /**
        * @brief  Publishes a velocity command of zero to the base
+       *         将零的速度命令发布给机器人
+       *         向 cmd_vel 话题发布000的速度信息，机器人停止运动
        */
       void publishZeroVelocity();
 
