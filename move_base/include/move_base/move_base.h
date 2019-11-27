@@ -181,6 +181,8 @@ namespace move_base {
 
       void goalCB(const geometry_msgs::PoseStamped::ConstPtr& goal);
 
+      // 这是全局路径规划线程 planner_thread_ 的入口。这个函数需要等待 actionlib 服务器的 CallBack 函数 MoveBase::executeCb 来唤醒启动。
+      // 主要作用是调用全局路径规划获取路径，同时保证规划的周期性以及规划超时清除 goal。
       void planThread();
 
       void executeCb(const move_base_msgs::MoveBaseGoalConstPtr& move_base_goal);
